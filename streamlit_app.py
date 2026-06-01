@@ -1,215 +1,206 @@
 import streamlit as st
-from rdkit import Chem
-from rdkit.Chem import AllChem
+import requests
 import py3Dmol
 import streamlit.components.v1 as components
 
-# ==============================================================================
-# DATABASE MINI (Untuk Demo Sifat Fisika/Kimia & Reaksi)
-# Karena konversi nama -> struktur -> sifat & reaksi secara realtime membutuhkan 
-# API eksternal (seperti PubChem), kita gunakan dictionary terkurasi untuk demo ini.
-# ==============================================================================
-DATABASE_SENYAWA = {
-    "etanol": {
-        "smiles": "CCO",
-        "iupac": "Etanol",
-        "trivial": "Alkohol / Etil Alkohol",
-        "fisika": "Cairan tidak berwarna, titik didih 78.37°C, mudah larut dalam air.",
-        "kimia": "Mudah terbakar, dapat dioksidasi menjadi etanal lalu asam etanoat.",
-        "reaksi": {
-            "asam asetat": {
-                "produk_smiles": "CCOC(=O)C",
-                "produk_nama": "Etil Asetat (Ester)",
-                "jenis": "Esterifikasi (Substitusi Nukleofilik)",
-                "penjelasan": "Reaksi antara etanol dan asam asetat dengan katalis asam menghasilkan etil asetat dan air."
-            }
-        }
-    },
-    "asam asetat": {
-        "smiles": "CC(=O)O",
-        "iupac": "Asam Etanoat",
-        "trivial": "Asam Asetat / Cuka",
-        "fisika": "Cairan jernih, bau menyengat, titik didih 118°C.",
-        "kimia": "Asam lemah, korosif pada konsentrasi tinggi.",
-        "reaksi": {
-            "etanol": {
-                "produk_smiles": "CCOC(=O)C",
-                "produk_nama": "Etil Asetat (Ester)",
-                "jenis": "Esterifikasi",
-                "penjelasan": "Asam asetat bereaksi dengan etanol membentuk senyawa ester beraroma buah (etil asetat)."
-            }
-        }
+# ==========================================
+# FUNGSI BANTUAN (HELPER FUNCTIONS)
+# ==========================================
+
+def translate_id_to_en(nama_senyawa):
+    """Translasi sederhana dari Trivial/IUPAC Indonesia ke Inggris untuk API PubChem"""
+    kamus = {
+        "etanol": "ethanol", "metanol": "methanol", "metana": "methane",
+        "etana": "ethane", "propana": "propane", "butana": "butane",
+        "asam asetat": "acetic acid", "asam cuka": "acetic acid",
+        "aseton": "acetone", "benzena": "benzene", "fenol": "phenol"
     }
-}
+    return kamus.get(nama_senyawa.lower().strip(), nama_senyawa.lower().strip())
 
-SOAL_LATIHAN = [
-    {"smiles": "CC(=O)C", "jawaban": ["propanon", "aseton"]},
-    {"smiles": "CCO", "jawaban": ["etanol", "etil alkohol"]},
-    {"smiles": "CCCC", "jawaban": ["butana", "n-butana"]}
-]
-
-# ==============================================================================
-# FUNGSI HELPER (Visualisasi 3D menggunakan Py3Dmol)
-# ==============================================================================
-def render_3d(smiles):
-    if not smiles:
-        return None
+def get_pubchem_data(compound_name):
+    """Mengambil data senyawa dari PubChem API"""
+    base_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{compound_name}"
+    
     try:
-        # Generate 3D Koordinat dari SMILES
-        mol = Chem.MolFromSmiles(smiles)
-        mol = Chem.AddHs(mol)
-        AllChem.EmbedMolecule(mol, AllChem.ETKDG())
-        AllChem.MMFFOptimizeMolecule(mol)
-        pdb_block = Chem.MolToPDBBlock(mol)
+        # Ambil properties dasar
+        prop_url = f"{base_url}/property/MolecularFormula,MolecularWeight,IUPACName,XLogP/JSON"
+        prop_res = requests.get(prop_url).json()
         
-        # Py3Dmol viewer
-        viewer = py3Dmol.view(width=400, height=300)
-        viewer.addModel(pdb_block, 'pdb')
-        viewer.setStyle({'stick': {}, 'sphere': {'scale': 0.3}})
-        viewer.zoomTo()
+        if "PropertyTable" not in prop_res:
+            return None
+            
+        properties = prop_res["PropertyTable"]["Properties"][0]
+        cid = properties.get("CID", 1)
         
-        # Render ke HTML
-        html = viewer._make_html()
-        return html
-    except:
-        return "<p style='color:red;'>Gagal membuat struktur 3D.</p>"
+        # Ambil struktur 3D SDF
+        sdf_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/SDF?record_type=3d"
+        sdf_res = requests.get(sdf_url)
+        sdf_data = sdf_res.text if sdf_res.status_code == 200 else None
+        
+        return {"properties": properties, "sdf": sdf_data}
+    except Exception as e:
+        return None
 
-# ==============================================================================
-# INTERFACE STREAMLIT
-# ==============================================================================
+def show_3d_molecule(sdf_data):
+    """Menampilkan model 3D seperti Molymod menggunakan py3Dmol"""
+    if not sdf_data:
+        st.warning("Struktur 3D tidak tersedia untuk senyawa ini.")
+        return
+        
+    view = py3Dmol.view(width=500, height=400)
+    view.addModel(sdf_data, 'sdf')
+    view.setStyle({'sphere': {'scale': 0.3}, 'stick': {'radius': 0.2}}) # Gaya Molymod
+    view.zoomTo()
+    
+    html = view._make_html()
+    components.html(html, height=400)
+
+def cek_reaksi(senyawa1, senyawa2):
+    """
+    Simulasi database reaksi kimia.
+    Di dunia nyata, ini membutuhkan engine cheminformatics (misal: RDKit).
+    """
+    s1 = senyawa1.lower()
+    s2 = senyawa2.lower()
+    
+    # Contoh Reaksi Esterifikasi
+    if (s1 == "etanol" and s2 == "asam asetat") or (s1 == "asam asetat" and s2 == "etanol"):
+        return {
+            "hasil_nama": "Etil Asetat",
+            "hasil_en": "ethyl acetate",
+            "jenis_reaksi": "Reaksi Esterifikasi",
+            "penjelasan": "Reaksi antara alkohol (etanol) dan asam karboksilat (asam asetat) menghasilkan ester (etil asetat) dan air (H2O). Reaksi ini bersifat dapat balik dan biasanya dikatalisis oleh asam pekat."
+        }
+    # Tambahkan kemungkinan reaksi lain di sini
+    return None
+
+# ==========================================
+# KONFIGURASI HALAMAN
+# ==========================================
 st.set_page_config(page_title="Tata Penamaan Senyawa Organik", layout="wide")
 
-st.title("🧪 Tata Penamaan & Reaksi Senyawa Organik")
-st.write("Aplikasi visualisasi molekul 3D, sifat fisik/kimia, prediksi reaksi, dan latihan soal.")
+# Navigasi Sidebar
+menu = st.sidebar.selectbox("Pilih Menu", ["Visualisasi & Reaksi", "Latihan Soal"])
 
-# Sidebar Menu Navigation
-menu = st.sidebar.selectbox("Pilih Menu:", ["Eksplorasi & Reaksi", "Latihan Soal"])
-
-# ------------------------------------------------------------------------------
-# MENU 1: EKSPLORASI & REAKSI
-# ------------------------------------------------------------------------------
-if menu == "Eksplorasi & Reaksi":
-    st.header("🔍 Identifikasi & Reaksi Senyawa")
+# ==========================================
+# MENU 1: VISUALISASI & REAKSI
+# ==========================================
+if menu == "Visualisasi & Reaksi":
+    st.title("🧪 Tata Penamaan Senyawa Organik")
+    st.write("Masukkan nama senyawa organik (IUPAC/Trivial) untuk melihat struktur 3D dan sifatnya.")
     
-    st.info("💡 **Tips Demo:** Coba masukkan **'etanol'** atau **'asam asetat'** (huruf kecil semua) untuk melihat fitur lengkap termasuk prediksi reaksi.")
-    
-    # Input Nama Senyawa
-    nama_input = st.text_input("Masukkan Nama Senyawa Organik (IUPAC / Trivial):", "").lower().strip()
-    
-    if nama_input:
-        # Cari di database lokal terlebih dahulu
-        data_senyawa = DATABASE_SENYAWA.get(nama_input)
+    col1, col2 = st.columns(2)
+    with col1:
+        senyawa_utama = st.text_input("Nama Senyawa Utama (Wajib):", placeholder="Contoh: etanol")
+    with col2:
+        senyawa_opsional = st.text_input("Nama Senyawa Pereaksi (Opsional):", placeholder="Contoh: asam asetat")
         
-        # Jika tidak ada di DB, coba generate SMILES langsung via RDKit (Simulasi cerdas)
-        smiles_target = None
-        if data_senyawa:
-            smiles_target = data_senyawa["smiles"]
-            iupac_name = data_senyawa["iupac"]
-            trivial_name = data_senyawa["trivial"]
-            fisika = data_senyawa["fisika"]
-            kimia = data_senyawa["kimia"]
-        else:
-            # Fallback: Menganggap input adalah SMILES valid jika tidak ada di DB
-            try:
-                test_mol = Chem.MolFromSmiles(nama_input)
-                if test_mol:
-                    smiles_target = nama_input
-                    iupac_name = "Terdeteksi dari SMILES"
-                    trivial_name = "-"
-                    fisika = "Data tidak tersedia di database lokal."
-                    kimia = "Data tidak tersedia di database lokal."
-            except:
-                smiles_target = None
-
-        if smiles_target:
-            col1, col2 = st.columns(2)
+    if st.button("Mulai", type="primary"):
+        if senyawa_utama:
+            nama_en = translate_id_to_en(senyawa_utama)
+            data = get_pubchem_data(nama_en)
             
-            with col1:
-                st.subheader("Structure Viewer (3D)")
-                html_3d = render_3d(smiles_target)
-                components.html(html_3d, height=300)
+            if data:
+                st.subheader(f"Senyawa: {senyawa_utama.title()}")
                 
-            with col2:
-                st.subheader("Informasi Senyawa")
-                st.markdown(f"**Nama IUPAC:** {iupac_name}")
-                st.markdown(f"**Nama Trivial:** {trivial_name}")
-                st.markdown(f"**Sifat Fisika:** {fisika}")
-                st.markdown(f"**Sifat Kimia:** {kimia}")
-            
-            # --- FITUR OPSIONAL: REAKSI ---
-            st.write("---")
-            st.subheader("⚗️ Simulasikan Reaksi Kimia (Opsional)")
-            reaktan_2 = st.text_input("Masukkan senyawa kedua untuk direaksikan:", "").lower().strip()
-            
-            if reaktan_2:
-                # Cek apakah ada data reaksi di database kita
-                if data_senyawa and "reaksi" in data_senyawa and reaktan_2 in data_senyawa["reaksi"]:
-                    info_reaksi = data_senyawa["reaksi"][reaktan_2]
+                # Layout hasil
+                res_col1, res_col2 = st.columns([1, 1])
+                with res_col1:
+                    st.write("*Struktur 3D (Molymod):*")
+                    show_3d_molecule(data['sdf'])
+                
+                with res_col2:
+                    st.write("*Sifat Fisika & Kimia:*")
+                    props = data['properties']
+                    st.write(f"- *Rumus Molekul:* {props.get('MolecularFormula', 'N/A')}")
+                    st.write(f"- *Berat Molekul:* {props.get('MolecularWeight', 'N/A')} g/mol")
+                    st.write(f"- *Nama IUPAC:* {props.get('IUPACName', 'N/A')}")
+                    st.write(f"- *XLogP (Sifat Lipofilik):* {props.get('XLogP', 'N/A')}")
+                
+                # Bagian Reaksi Opsional
+                if senyawa_opsional:
+                    st.divider()
+                    st.subheader("⚡ Hasil Reaksi")
+                    reaksi_info = cek_reaksi(senyawa_utama, senyawa_opsional)
                     
-                    st.success(f"**Reaksi Terdeteksi!** Jenis Reaksi: *{info_reaksi['jenis']}*")
-                    
-                    col_rx1, col_rx2 = st.columns(2)
-                    with col_rx1:
-                        st.write(f"**Struktur 3D Produk: {info_reaksi['produk_nama']}**")
-                        html_produk = render_3d(info_reaksi["produk_smiles"])
-                        components.html(html_produk, height=300)
-                    
-                    with col_rx2:
-                        st.write("**Mekanisme & Penjelasan Reaksi:**")
-                        st.info(info_reaksi["penjelasan"])
-                        st.write("**Sifat Produk:**")
-                        st.write("- Umumnya memiliki aroma/karakteristik baru dibanding reaktannya.")
-                else:
-                    st.warning("Maaf, reaksi untuk kombinasi senyawa ini belum tersedia di database lokal simulator.")
-                    
+                    if reaksi_info:
+                        st.success(f"*{reaksi_info['jenis_reaksi']}* terjadi!")
+                        st.write(reaksi_info['penjelasan'])
+                        
+                        data_hasil = get_pubchem_data(reaksi_info['hasil_en'])
+                        if data_hasil:
+                            hasil_col1, hasil_col2 = st.columns(2)
+                            with hasil_col1:
+                                st.write(f"*Struktur 3D: {reaksi_info['hasil_nama']}*")
+                                show_3d_molecule(data_hasil['sdf'])
+                            with hasil_col2:
+                                st.write("*Sifat Produk:*")
+                                h_props = data_hasil['properties']
+                                st.write(f"- *Rumus Molekul:* {h_props.get('MolecularFormula', 'N/A')}")
+                                st.write(f"- *Nama IUPAC:* {h_props.get('IUPACName', 'N/A')}")
+                    else:
+                        st.warning("Reaksi antara dua senyawa tersebut belum ada di database lokal kami atau secara teori tidak bereaksi secara langsung pada kondisi standar.")
+            else:
+                st.error("Senyawa tidak ditemukan. Pastikan ejaan benar atau gunakan nama IUPAC bahasa Inggris/Indonesia yang baku.")
         else:
-            st.error("Senyawa tidak ditemukan di database atau format SMILES salah. Coba gunakan kata kunci 'etanol' atau 'asam asetat'.")
+            st.warning("Harap masukkan nama senyawa utama terlebih dahulu.")
 
-# ------------------------------------------------------------------------------
+# ==========================================
 # MENU 2: LATIHAN SOAL
-# ------------------------------------------------------------------------------
+# ==========================================
 elif menu == "Latihan Soal":
-    st.header("🧠 Latihan Soal: Tebak Nama Struktur")
+    st.title("📝 Latihan Tata Penamaan")
+    st.write("Tebak nama IUPAC atau Trivial (Indonesia) dari rumus struktur berikut.")
     
-    # Inisialisasi state untuk nomor soal agar tidak reset saat button diklik
+    # Database Soal Sederhana
+    soal_list = [
+        {
+            "struktur": "CH3 - CH2 - OH",
+            "jawaban_valid": ["etanol", "etil alkohol", "ethanol"],
+            "pembahasan": "Senyawa ini memiliki dua atom karbon (et-) dan gugus fungsi alkohol (-OH). Oleh karena itu, nama IUPAC-nya adalah Etanol, atau nama trivialnya Etil Alkohol."
+        },
+        {
+            "struktur": "CH3 - CO - CH3",
+            "jawaban_valid": ["propanon", "aseton", "dimetil keton"],
+            "pembahasan": "Senyawa ini memiliki tiga atom karbon (prop-) dengan gugus fungsi keton (-CO-) di tengah. Nama IUPAC-nya adalah Propanon, dikenal luas dengan nama trivial Aseton."
+        },
+        {
+            "struktur": "CH3 - CH2 - CH2 - CH3",
+            "jawaban_valid": ["butana", "n-butana"],
+            "pembahasan": "Rantai lurus alkana dengan 4 atom karbon. Diberi awalan but- dan akhiran -ana. Nama IUPAC-nya adalah Butana."
+        }
+    ]
+    
+    # Inisialisasi Session State untuk indeks soal
     if 'nomor_soal' not in st.session_state:
         st.session_state.nomor_soal = 0
-    if 'skor' not in st.session_state:
-        st.session_state.skor = 0
 
-    if st.session_state.nomor_soal < len(SOAL_LATIHAN):
-        soal_aktif = SOAL_LATIHAN[st.session_state.nomor_soal]
-        
-        col_soal1, col_soal2 = st.columns([1, 1])
-        
-        with col_soal1:
-            st.write(f"### Soal ke-{st.session_state.nomor_soal + 1}")
-            st.write("Tebak nama IUPAC atau Trivial dari struktur 3D di samping!")
-            
-            # Form untuk menjawab
-            jawaban_user = st.text_input("Jawaban Anda:", key=f"soal_{st.session_state.nomor_soal}").lower().strip()
-            tombol_jawab = st.button("Kirim Jawaban")
-            
-            if tombol_jawab:
-                if jawaban_user in soal_aktif["jawaban"]:
-                    st.success("🎉 Benar sekali!")
-                    st.session_state.skor += 1
-                else:
-                    st.error(f"❌ Salah! Jawaban yang benar bisa: {', '.join(soal_aktif['jawaban'])}")
+    soal_sekarang = soal_list[st.session_state.nomor_soal]
+    
+    st.subheader(f"Soal {st.session_state.nomor_soal + 1}")
+    st.info(f"*Rumus Struktur:*\n\n### {soal_sekarang['struktur']}")
+    
+    jawaban_user = st.text_input("Masukkan Nama Senyawa (IUPAC/Trivial):", key=f"input_{st.session_state.nomor_soal}")
+    
+    if st.button("Cek Jawaban"):
+        if jawaban_user:
+            if jawaban_user.lower().strip() in soal_sekarang['jawaban_valid']:
+                st.success("🎉 BENAR!")
+            else:
+                st.error("❌ SALAH.")
                 
-                # Tambah delay/tombol untuk lanjut
-                st.session_state.nomor_soal += 1
-                st.button("Lanjut ke Soal Berikutnya")
-                
-        with col_soal2:
-            # Tampilkan struktur soal
-            html_soal = render_3d(soal_aktif["smiles"])
-            components.html(html_soal, height=320)
+            st.write("*Pembahasan:*")
+            st.write(soal_sekarang['pembahasan'])
             
-    else:
-        st.balloons()
-        st.success(f"### Kuis Selesai! Skor Anda: {st.session_state.skor} / {len(SOAL_LATIHAN)}")
-        if st.button("Ulangi Kuis"):
-            st.session_state.nomor_soal = 0
-            st.session_state.skor = 0
-            st.rerun()
+            # Tombol ke soal berikutnya
+            if st.session_state.nomor_soal < len(soal_list) - 1:
+                if st.button("Soal Selanjutnya"):
+                    st.session_state.nomor_soal += 1
+                    st.rerun()
+            else:
+                st.write("🌟 *Anda telah menyelesaikan semua soal!*")
+                if st.button("Ulangi Latihan"):
+                    st.session_state.nomor_soal = 0
+                    st.rerun()
+        else:
+            st.warning("Tulis jawaban Anda terlebih dahulu.")
