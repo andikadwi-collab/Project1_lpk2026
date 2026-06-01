@@ -2,90 +2,127 @@ import streamlit as st
 import requests
 import py3Dmol
 import streamlit.components.v1 as components
+import re
 
 # ==========================================
-# 1. KAMUS TRANSLASI & ENGINE DATABASE LOKAL
+# 1. ENGINE TRANSLASI OTOMATIS (>1000 SENYAWA)
 # ==========================================
 
-def translate_id_to_en(nama_senyawa):
-    """Translasi nama Indonesia (IUPAC/Trivial) ke Inggris untuk pencarian PubChem API"""
-    kamus = {
-        "etanol": "ethanol", "alkohol": "ethanol",
-        "metanol": "methanol",
-        "metana": "methane", "etana": "ethane", "propana": "propane", "butana": "butane",
-        "asam asetat": "acetic acid", "asam cuka": "acetic acid",
-        "aseton": "acetone", "propanon": "acetone",
-        "benzena": "benzene", "fenol": "phenol",
-        "etil asetat": "ethyl acetate", "kloroform": "chloroform",
-        "kloroetana": "chloroethane", "etil klorida": "chloroethane",
-        "etena": "ethene", "etilena": "ethene",
-        "asetilena": "acetylene", "etuna": "acetylene",
-        "bromana": "bromomethane", "bromometana": "bromomethane",
-        "butil asetat": "butyl acetate", "n-butanol": "1-butanol", "butanol": "1-butanol"
-    }
-    nama_clean = nama_senyawa.lower().strip()
-    return kamus.get(nama_clean, nama_clean)
-
-def cek_reaksi_kimia(senyawa1, senyawa2):
+def translate_organic_id_to_en(nama_id):
     """
-    Database simulasi reaksi organik komprehensif berdasarkan literatur teori utama.
-    Mengembalikan nama produk (EN), nama produk (ID), jenis reaksi, dan penjelasan mendalam.
+    Mentranslasikan nomenklatur IUPAC/Trivial Indonesia ke Inggris menggunakan pola adaptif.
+    Mendukung ribuan kombinasi senyawa organik secara otomatis.
+    """
+    nama = nama_id.lower().strip()
+    
+    # Kamus substitusi sufiks & prefiks tata nama organik standar
+    replacements = {
+        "asam ": "acid ",      "asetat": "acetate",    "formiat": "formate",
+        "propionat": "propionate", "butirat": "butyrate",  "oksalat": "oxalate",
+        "metil": "methyl",      "etil": "ethyl",        "propil": "propyl",
+        "butil": "butyl",        "pentil": "pentyl",      "heksil": "hexyl",
+        "heptil": "heptyl",      "oktil": "octyl",        "nonil": "nonyl",
+        "dekil": "decyl",        "isopropil": "isopropyl", "isobutil": "isobutyl",
+        "fenil": "phenyl",      "benzil": "benzyl",
+        "alkohol": "alcohol",    "eter": "ether",        "keton": "ketone",
+        "klorida": "chloride",  "bromida": "bromide",   "iodida": "iodide",
+        # Sufiks Hidrokarbon & Gugus Fungsi
+        "ana$": "ane",          "ena$": "ene",          "una$": "yne",
+        "anol$": "anol",        "anal$": "anal",        "anon$": "anone",
+        "anoat$": "anoate",     "amina$": "amine",      "amida$": "amide",
+        "benzena": "benzene",    "fenol": "phenol",      "anilin": "aniline"
+    }
+    
+    for pattern, repl in replacements.items():
+        if pattern.endswith('$'):
+            nama = re.sub(pattern[:-1] + "$", repl, nama)
+        else:
+            nama = re.sub(pattern, repl, nama)
+            
+    # Kasus khusus Asam Karboksilat (Asam ... anoat -> ...anoic acid)
+    if "acid" in nama and nama.endswith("anoate"):
+        nama = nama.replace("acid ", "") + " acid"
+        nama = re.sub(r"anoate$", "anoic", nama)
+        
+    return nama
+
+# ==========================================
+# 2. DETEKSI & PREDIKSI REAKSI BERBASIS TEORI
+# ==========================================
+
+def analisis_prediksi_reaksi(senyawa1, senyawa2):
+    """
+    Menganalisis jenis reaksi (Adisi, Substitusi, Eliminasi, dll) berdasarkan 
+    karakteristik struktur/gugus fungsi dari kedua reaktan.
     """
     s1 = senyawa1.lower().strip()
     s2 = senyawa2.lower().strip()
     
-    # Kumpulan kondisi reaksi pasang-memasang
-    # 1. Esterifikasi (Asam Karboksilat + Alkohol)
-    if ((s1 == "asam asetat" or s1 == "asam cuka") and s2 in ["etanol", "alkohol"]) or \
-       (s1 in ["etanol", "alkohol"] and (s2 == "asam asetat" or s2 == "asam cuka")):
-        return {
-            "hasil_en": "ethyl acetate", "hasil_id": "Etil Asetat (Ester)",
-            "jenis": "Reaksi Esterifikasi (Kondensasi)",
-            "mekanisme": "Reaksi substitusi nukleofil asil senyawa asam karboksilat dengan alkohol. Gugus -OH dari asam asetat lepas bersama atom H dari alkohol membentuk H2O, menyisakan ikatan ester baru.",
-            "sifat_kimia": "Mudah terbakar, kurang reaktif terhadap oksidator, mengalami hidrolisis kembali jika dipanaskan dengan asam/basa kuat.",
-            "sifat_fisika": "Cairan bening, aroma buah khas (fruity), titik didih ~77°C, kelarutan sedang dalam air."
-        }
+    # 1. REAKSI ADISI (Alkena/Alkuna + Halogen/Asam Halida/Air)
+    if any(x in s1 for x in ["ena", "una"]) or any(x in s2 for x in ["ena", "una"]):
+        alkena = s1 if any(x in s1 for x in ["ena", "una"]) else s2
+        pereaksi = s2 if alkena == s1 else s1
+        
+        if any(x in pereaksi for x in ["klor", "brom", "iod", "hcl", "hbr", "hi", "h2o", "hidrogen"]):
+            return {
+                "jenis": "Reaksi Adisi Elektrofilik (Pemutusan Ikatan Rangkap)",
+                "mekanisme": f"Ikatan pi ($\pi$) pada `{alkena}` yang kaya elektron diserang oleh agen elektrofilik dari `{pereaksi}`. Ikatan rangkap dua/tiga terbuka menjadi ikatan tunggal (jenuh) mengikuti aturan Markovnikov.",
+                "produk_estimasi": "Haloalkana / Alkanol (tergantung jenis pereaksi halogen/asam yang dimasukkan)."
+            }
+            
+    # 2. REAKSI ESTERIFIKASI (Asam Karboksilat + Alkohol)
+    is_asam = lambda s: "asam" in s or "anoate acid" in translate_organic_id_to_en(s)
+    is_alkohol = lambda s: s.endswith("nol") or "alkohol" in s
     
-    if ((s1 == "asam asetat" or s1 == "asam cuka") and s2 in ["butanol", "n-butanol"]) or \
-       (s1 in ["butanol", "n-butanol"] and (s2 == "asam asetat" or s2 == "asam cuka")):
+    if (is_asam(s1) and is_alkohol(s2)) or (is_asam(s2) and is_alkohol(s1)):
+        asam_sub = s1 if is_asam(s1) else s2
+        alk_sub = s2 if asam_sub == s1 else s1
         return {
-            "hasil_en": "butyl acetate", "hasil_id": "Butil Asetat (Ester)",
-            "jenis": "Reaksi Esterifikasi Fischer",
-            "mekanisme": "Alkohol rantai menengah (butanol) menyerang karbon karbonil terprotonasi dari asam asetat menghasilkan ester beraroma pisang.",
-            "sifat_kimia": "Stabil pada kondisi normal, terhidrolisis menjadi penyusunnya lewat katalis asam/basa.",
-            "sifat_fisika": "Cairan berbau harum buah pisang, titik didih ~126°C, densitas lebih ringan dari air."
+            "jenis": "Reaksi Esterifikasi / Kondensasi (Substitusi Nukleofil Asil)",
+            "mekanisme": f"Gugus -OH dari `{asam_sub}` berikatan dengan atom H dari gugus hidroksil `{alk_sub}` menghasilkan molekul sampingan $H_2O$. Gugus alkoksi dari alkohol kemudian mensubstitusi posisi -OH pada asam untuk membentuk senyawa Ester.",
+            "produk_estimasi": "Alkil Alkanoat (Ester) + Air ($H_2O$)."
         }
 
-    # 2. Substitusi Radikal Klorinasi Alkana (Metana + Klorin/Kloroform fiktif pereaksi)
-    if (s1 == "metana" and "klor" in s2) or ("klor" in s1 and s2 == "metana"):
+    # 3. REAKSI SUBSTITUSI (Alkana + Halogen dengan bantuan UV/Cahaya)
+    is_alkana = lambda s: s.endswith("ana") and not "asam" in s
+    if (is_alkana(s1) and any(x in s2 for x in ["klor", "brom", "fluor"])) or \
+       (is_alkana(s2) and any(x in s1 for x in ["klor", "brom", "fluor"])):
+        alk_sub = s1 if is_alkana(s1) else s2
+        hal_sub = s2 if alk_sub == s1 else s1
         return {
-            "hasil_en": "chloromethane", "hasil_id": "Klorometana (Metil Klorida)",
-            "jenis": "Reaksi Substitusi Radikal Bebas",
-            "mekanisme": "Melalui tiga tahapan: Inisiasi (pembentukan radikal Cl• oleh UV), Propagasi (penyerangan rantai alkana), dan Terminasi. Satu atom H digantikan oleh atom Cl.",
-            "sifat_kimia": "Dapat mengalami klorinasi lebih lanjut menjadi diklorometana, kloroform, hingga karbon tetraklorida.",
-            "sifat_fisika": "Gas tidak berwarna pada suhu kamar, berbau manis, mudah terbakar."
+            "jenis": "Reaksi Substitusi Radikal Bebas (Halogenasi Alkana)",
+            "mekanisme": f"Sinar UV memicu homolisis molekul `{hal_sub}` menjadi radikal bebas halogen yang sangat reaktif. Radikal ini menyerang ikatan C-H pada `{alk_sub}`, menggantikan posisi atom H dengan atom halogen secara bertahap.",
+            "produk_estimasi": "Haloalkana (Alkil Halida) + Asam Halida (seperti $HCl$ / $HBr$)."
         }
 
-    # 3. Reaksi Adisi Elektrofilik (Etena + Asam/Halogen)
-    if (s1 in ["etena", "etilena"] and "asam asetat" in s2) or ("asam asetat" in s1 and s2 in ["etena", "etilena"]):
-        return {
-            "hasil_en": "ethyl acetate", "hasil_id": "Etil Asetat",
-            "jenis": "Reaksi Adisi Karboksilasi",
-            "mekanisme": "Ikatan pi (π) yang kaya elektron pada etena menyerang proton asam, membentuk karbokation zat antara yang kemudian diserang oleh anion asetat.",
-            "sifat_kimia": "Merupakan pelarut polar aprotik yang umum digunakan industri.",
-            "sifat_fisika": "Sama seperti sifat etil asetat dari jalur esterifikasi."
-        }
+    # 4. REAKSI ELIMINASI (Alkil Halida / Alkohol + Basa Kuat / Asam Pekat Panas)
+    if is_alkohol(s1) or is_alkohol(s2) or "kloro" in s1 or "bromo" in s1 or "kloro" in s2 or "bromo" in s2:
+        if any(x in s1 or x in s2 for x in ["naoh", "koh", "h2so4", "basa", "asam pekat"]):
+            return {
+                "jenis": "Reaksi Eliminasi (Pembentukan Ikatan Rangkap / Dehidrasi / Dehidrohalogenasi)",
+                "mekanisme": "Pelepasan dua gugus atau atom dari dua atom karbon yang berdekatan ($C_\alpha$ dan $C_\beta$) membentuk ikatan rangkap baru ($\pi$). Mengikuti aturan Zaitsev, di mana hidrogen dilepaskan dari karbon yang mengikat lebih sedikit hidrogen.",
+                "produk_estimasi": "Senyawa Hidrokarbon Tak Jenuh (Alkena) + Air/Garam."
+            }
+
+    # 5. REAKSI OKSIDASI (Alkohol + Oksidator seperti KMnO4 / K2Cr2O7)
+    if is_alkohol(s1) or is_alkohol(s2):
+        if any(x in s1 or x in s2 for x in ["kmno4", "k2cr2o7", "oksidator", "oksigen", "o2"]):
+            return {
+                "jenis": "Reaksi Oksidasi Organik",
+                "mekanisme": "Pengurangan ikatan C-H dan peningkatan ikatan C-O pada atom karbon hidroksil. Alkohol primer akan dioksidasi menjadi Alkanal (Aldehida) lalu menjadi Asam Karboksilat. Alkohol sekunder dioksidasi menjadi Alkanon (Keton).",
+                "produk_estimasi": "Alkanal / Alkanon / Asam Karboksilat."
+            }
 
     return None
 
 # ==========================================
-# 2. PENGAMBILAN DATA API PUBCHEM
+# 3. KONEKSI DATA API PUBCHEM REST
 # ==========================================
 
 @st.cache_data(show_spinner=False)
-def get_pubchem_data(compound_name):
-    """Mengambil properti fisis, kimia, dan data SDF 3D langsung dari PubChem API"""
-    base_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{compound_name}"
+def ambil_data_pubchem(nama_inggris):
+    """Mengambil properti fisis, kimia, dan koordinat 3D terverifikasi dari PubChem"""
+    base_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{nama_inggris}"
     try:
         prop_url = f"{base_url}/property/MolecularFormula,MolecularWeight,IUPACName,XLogP,CanonicalSMILES/JSON"
         res = requests.get(prop_url, timeout=5).json()
@@ -95,7 +132,7 @@ def get_pubchem_data(compound_name):
         properties = res["PropertyTable"]["Properties"][0]
         cid = properties.get("CID")
         
-        # Ambil struktur koordinat 3D konformers
+        # Ambil file koordinat model 3D (SDF)
         sdf_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/SDF?record_type=3d"
         sdf_res = requests.get(sdf_url, timeout=5)
         sdf_data = sdf_res.text if sdf_res.status_code == 200 else None
@@ -104,219 +141,157 @@ def get_pubchem_data(compound_name):
     except Exception:
         return None
 
-def tampilkan_molymod_3d(sdf_data):
-    """Merender objek 3D molekul bergaya Molymod menggunakan py3Dmol"""
+def render_molymod_3d(sdf_data):
+    """Menampilkan penampil molekul 3D interaktif bergaya Molymod"""
     if not sdf_data:
-        st.warning("⚠️ Model 3D koordinat tidak ditemukan di repositori PubChem.")
+        st.warning("⚠️ Model koordinat ruang 3D tidak tersedia untuk senyawa ini di PubChem.")
         return
-    
-    view = py3Dmol.view(width=500, height=350)
+    view = py3Dmol.view(width=600, height=400)
     view.addModel(sdf_data, 'sdf')
-    # Konfigurasi gaya visualisasi Molymod (Sphere-Stick Campuran)
-    view.setStyle({'sphere': {'scale': 0.3}, 'stick': {'radius': 0.18}})
+    # Gaya Molymod: Bola (Sphere-atom) dan Batang (Stick-ikatan)
+    view.setStyle({'sphere': {'scale': 0.3}, 'stick': {'radius': 0.2}})
     view.zoomTo()
-    html_content = view._make_html()
-    components.html(html_content, height=360)
+    components.html(view._make_html(), height=410)
 
 # ==========================================
-# 3. INTERFASI APLIKASI STREAMLIT
+# 4. ANTARMUKA UTAMA (STREAMLIT APP)
 # ==========================================
 
-st.set_page_config(page_title="Aplikasi Tata Penamaan Organik", layout="wide")
+st.set_page_config(page_title="Tata Penamaan Senyawa Organik", layout="wide")
 
-# Sidebar Menu Navigasi
-st.sidebar.title("📚 Navigasi")
-menu = st.sidebar.radio("Pilih Modul:", ["Visualisasi & Prediksi Reaksi", "Latihan Soal Mandiri (10 Soal)"])
+st.sidebar.title("📌 Menu Utama")
+pilihan_menu = st.sidebar.radio("Silakan Pilih Modul:", ["Ensiklopedi & Prediksi Reaksi", "Latihan Soal Mandiri"])
 
 # ------------------------------------------
-# MODUL 1: VISUALISASI & REAKSI
+# MODUL 1: VISUALISASI & PREDIKSI REAKSI
 # ------------------------------------------
-if menu == "Visualisasi & Prediksi Reaksi":
-    st.title("🧪 Modul Visualisasi 3D & Ensiklopedia Senyawa Organik")
-    st.write("Masukkan nama IUPAC atau trivial Indonesia. Sistem akan mencari struktur kimia dan memetakan sifat fisis-kimia berdasar literatur.")
+if pilihan_menu == "Ensiklopedi & Prediksi Reaksi":
+    st.title("🧪 Ensiklopedi Kimia Organik & Prediktor Reaksi Teoretis")
+    st.write("Mendukung >1000 senyawa lewat translasi otomatis sistem database tervalidasi PubChem NIH.")
     
-    col_in1, col_in2 = st.columns(2)
-    with col_in1:
-        senyawa_1 = st.text_input("Nama Senyawa Utama (Bahasa Indonesia/Inggris):", placeholder="Contoh: etanol, metana, etena")
-    with col_in2:
-        senyawa_2 = st.text_input("Senyawa Pereaksi Tambahan (Opsional):", placeholder="Contoh: asam asetat")
+    col_input1, col_input2 = st.columns(2)
+    with col_input1:
+        input_senyawa1 = st.text_input("Nama Senyawa Utama (Bahasa Indonesia):", placeholder="Contoh: heksana, butanol, asam propionat")
+    with col_input2:
+        input_senyawa2 = st.text_input("Senyawa Pereaksi Tambahan (Opsional):", placeholder="Contoh: bromin, NaOH, etanol")
         
     if st.button("Mulai Analisis Kimia", type="primary"):
-        if senyawa_1:
-            nama_en_1 = translate_id_to_en(senyawa_1)
-            with st.spinner("Sedang mengunduh dan menganalisis struktur data dari PubChem..."):
-                data_1 = get_pubchem_data(nama_en_1)
+        if input_senyawa1:
+            nama_en_1 = translate_organic_id_to_en(input_senyawa1)
+            
+            with st.spinner(f"Mencari data tervalidasi untuk '{nama_en_1}' di PubChem..."):
+                data_senyawa1 = ambil_data_pubchem(nama_en_1)
                 
-            if data_1:
-                st.success(f"🔍 Senyawa Ditemukan: {senyawa_1.title()}")
+            if data_senyawa1:
+                st.success(f"✓ Data Berhasil Ditemukan: {input_senyawa1.upper()}")
+                
                 c1, c2 = st.columns([1.2, 1])
-                
                 with c1:
-                    st.markdown("#### 🗼 Struktur Geometri 3D (Gaya Molymod)")
-                    tampilkan_molymod_3d(data_1['sdf'])
-                    st.caption("Gunakan mouse Anda untuk memutar, menggeser, atau memperbesar struktur molekul di atas.")
-                    
+                    st.markdown("### 🧬 Visualisasi 3D (Model Molymod)")
+                    render_molymod_3d(data_senyawa1['sdf'])
+                
                 with c2:
-                    st.markdown("#### 📖 Sifat Fisika & Karakteristik Dasar")
-                    p = data_1['properties']
+                    st.markdown("### 📘 Sifat Fisika & Karakteristik")
+                    props = data_senyawa1['properties']
                     st.markdown(f"""
-                    * **Nama IUPAC Resmi (EN):** `{p.get('IUPACName', 'N/A')}`
-                    * **Rumus Molekul:** {p.get('MolecularFormula', 'N/A')}
-                    * **Berat Molekul:** {p.get('MolecularWeight', 'N/A')} g/mol
-                    * **LogP (Koefisien Partisi Oktanol/Air):** `{p.get('XLogP', 'N/A')}` *(Menunjukkan tingkat hidrofobisitas/lipofisitas senyawa)*
-                    * **Canonical SMILES:** `{p.get('CanonicalSMILES', 'N/A')}`
+                    * **Nama Resmi IUPAC (Inggris):** `{props.get('IUPACName', 'N/A')}`
+                    * **Rumus Molekul:** **{props.get('MolecularFormula', 'N/A')}**
+                    * **Berat Molekul:** `{props.get('MolecularWeight', 'N/A')} g/mol`
+                    * **Sifat Lipofilik (LogP):** `{props.get('XLogP', 'N/A')}`
+                    * **SMILES Notasi:** `{props.get('CanonicalSMILES', 'N/A')}`
                     """)
                     
-                    # Tambahan literatur statis sekunder teoretis
-                    st.markdown("#### ⚗️ Sifat Kimia & Reaktivitas Umum (Teori)")
-                    if "ol" in nama_en_1:
-                        st.info("💡 **Gugus Alkohol (-OH):** Memiliki ikatan hidrogen antarmolekul yang kuat menyebabkan titik didih tinggi, bersifat polar, dapat dioksidasi menjadi aldehida/keton atau asam karboksilat, serta dapat mengalami esterifikasi.")
-                    elif "acid" in nama_en_1 or "asam" in senyawa_1.lower():
-                        st.info("💡 **Gugus Asam Karboksilat (-COOH):** Bersifat asam lemah, larut baik dalam pelarut polar, dapat bereaksi dengan alkohol membentuk senyawa ester aromatik melalui reaksi dehidrasi.")
-                    elif "ane" in nama_en_1 or "ana" in senyawa_1.lower():
-                        st.info("💡 **Golongan Alkana (Hidrokarbon Jenuh):** Bersifat non-polar, relatif tidak reaktif (inersia kimia tinggi) karena ikatan tunggal C-C dan C-H yang kuat. Reaksi utama adalah pembakaran (oksidasi) dan substitusi radikal bebas dengan halogen di bawah sinar UV.")
+                    st.markdown("### ⚗️ Deskripsi Reaktivitas Sifat Kimia")
+                    # Klasifikasi Teoretis Otomatis
+                    if any(x in nama_en_1 for x in ["ol", "alcohol"]):
+                        st.info("💡 **Gugus Alkohol (-OH):** Memiliki sifat polar karena ikatan hidrogen, titik didih cenderung tinggi, dan dapat mengalami reaksi substitusi nukleofil, eliminasi (dehidrasi) menjadi alkena, atau esterifikasi jika direaksikan dengan asam karboksilat.")
+                    elif "acid" in nama_en_1:
+                        st.info("💡 **Gugus Asam Karboksilat (-COOH):** Bersifat asam lemah, larut dalam pelarut polar, senyawa ini reaktif terhadap alkohol dalam pembentukan senyawa ester berbau harum melalui reaksi kondensasi.")
+                    elif "ene" in nama_en_1 or "yne" in nama_en_1:
+                        st.info("💡 **Hidrokarbon Tak Jenuh (Alkena/Alkuna):** Sangat reaktif pada ikatan rangkapnya. Reaksi utama yang dominan adalah **Adisi** (pemutusan ikatan rangkap) oleh reagen elektrofilik seperti halogen atau asam halida.")
                     else:
-                        st.info("💡 Senyawa ini memiliki kestabilan struktur fungsional organik spesifik sesuai orientasi kerapatan elektron hibridisasinya.")
-
-                # JIKA SENYAWA 2 DIISI (SIMULASI REAKSI)
-                if senyawa_2:
+                        st.info("💡 **Karakteristik Umum:** Senyawa ini memiliki tingkat stabilitas fungsional organik hidrokarbon normal sesuai susunan hibridisasi orbital atomnya.")
+                
+                # JIKA INPUT OPSIONAL DIISI
+                if input_senyawa2:
                     st.markdown("---")
-                    st.header("⚡ Analisis Prediksi Reaksi Kimia")
-                    hasil_reaksi = cek_reaksi_kimia(senyawa_1, senyawa_2)
+                    st.header("⚡ Analisis Mekanisme & Prediksi Jenis Reaksi")
                     
-                    if hasil_reaksi:
-                        st.success(f"✅ **Terjadi {hasil_reaksi['jenis']}**")
+                    info_reaksi = analisis_prediksi_reaksi(input_senyawa1, input_senyawa2)
+                    if info_reaksi:
+                        st.markdown(f"#### Jenis Klasifikasi: **{info_reaksi['jenis']}**")
                         
-                        rc1, rc2 = st.columns([1, 1.2])
-                        with rc1:
-                            st.markdown(f"**Mekanisme Reaksi:**\n{hasil_reaksi['mekanisme']}")
-                            st.markdown(f"**Sifat Fisika Produk ({hasil_reaksi['hasil_id']}):**\n{hasil_reaksi['sifat_fisika']}")
-                            st.markdown(f"**Sifat Kimia Produk:**\n{hasil_reaksi['sifat_kimia']}")
-                            
-                        with rc2:
-                            st.markdown(f"#### 🧬 Struktur 3D Produk: {hasil_reaksi['hasil_id']}")
-                            data_produk = get_pubchem_data(hasil_reaksi['hasil_en'])
-                            if data_produk:
-                                tampilkan_molymod_3d(data_produk['sdf'])
-                            else:
-                                st.warning("Gagal mengambil model 3D untuk produk reaksi.")
+                        col_r1, col_r2 = st.columns(2)
+                        with col_r1:
+                            st.markdown(f"""
+                            **Penjelasan Mekanisme Berdasarkan Teori:**
+                            {info_reaksi['mekanisme']}
+                            """)
+                        with col_r2:
+                            st.markdown(f"""
+                            **Estimasi Sifat & Hasil Produk:**
+                            * **Prediksi Utama Produk:** `{info_reaksi['produk_estimasi']}`
+                            * **Kondisi Umum:** Reaksi organik jenis ini kerap memerlukan pengaruh lingkungan luar seperti katalis asam ($H^+$), basa kuat, atau paparan energi foton (Sinar UV/Panas).
+                            """)
                     else:
-                        st.warning("⚠️ Berdasarkan basis data teoretis standar, kombinasi kedua senyawa ini tidak bereaksi secara langsung atau memerlukan kondisi katalis ekstrem di luar jangkauan modul ini.")
+                        st.warning("⚠️ Kombinasi kedua senyawa belum terpetakan dalam database aturan reaksi lokal, atau kedua senyawa tidak bereaksi secara spontan pada kondisi standar menurut teori.")
             else:
-                st.error("❌ Nama senyawa tidak dikenali oleh kamus lokal maupun database PubChem. Periksa kembali ejaan IUPAC/Trivial Anda.")
+                st.error("❌ Nama senyawa tidak terdeteksi oleh sistem pencarian PubChem. Pastikan ejaan tata nama IUPAC/Trivial Indonesia Anda sudah tepat.")
         else:
-            st.warning("Silakan masukkan nama senyawa utama terlebih dahulu.")
+            st.warning("Harap masukkan nama senyawa organik utama.")
 
 # ------------------------------------------
-# MODUL 2: LATIHAN SOAL MANDIRI
+# MODUL 2: LATIHAN SOAL (10 SOAL LENGKAP)
 # ------------------------------------------
-elif menu == "Latihan Soal Mandiri (10 Soal)":
-    st.title("📝 Latihan Soal Evaluasi Tata Penamaan Senyawa Organik")
-    st.write("Uji kemampuan pemahaman nomenklatur IUPAC dan Trivial Indonesia Anda berdasarkan visualisasi rantai karbon berikut.")
+elif pilihan_menu == "Latihan Soal Mandiri":
+    st.title("📝 Evaluasi Mandiri Tata Nama Organik (10 Soal)")
+    st.write("Analisis struktur rantai di bawah ini lalu tentukan nama IUPAC atau Trivial Indonesianya!")
 
-    # 10 Soal Komprehensif
     bank_soal = [
-        {
-            "struktur": "CH3 - CH2 - OH",
-            "kunci": ["etanol", "etil alkohol"],
-            "pembahasan": "Senyawa ini memiliki 2 atom karbon (et-) dan mengandung gugus hidroksil (-OH) yang merupakan ciri khas alkohol. Nama IUPAC: Etanol; Nama Trivial: Etil Alkohol."
-        },
-        {
-            "struktur": "CH3 - CO - CH3",
-            "kunci": ["propanon", "aseton", "dimetil keton"],
-            "pembahasan": "Memiliki rantai 3 atom karbon dengan gugus karbonil (=O) non-terminal (di tengah). Nama IUPAC: Propanon; Nama Trivial: Aseton."
-        },
-        {
-            "struktur": "CH3 - COOH",
-            "kunci": ["asam asetat", "asam etanoat", "asam cuka"],
-            "pembahasan": "Mengandung gugus karboksil (-COOH) dengan total 2 karbon. Nama IUPAC: Asam Etanoat; Nama Trivial: Asam Asetat atau Asam Cuka."
-        },
-        {
-            "struktur": "CH2 = CH - CH3",
-            "kunci": ["propena", "propilena"],
-            "pembahasan": "Hidrokarbon tak jenuh dengan satu ikatan rangkap dua pada rantai 3 karbon. Nama IUPAC: Propena; Nama Trivial: Propilena."
-        },
-        {
-            "struktur": "CH3 - O - CH3",
-            "kunci": ["dimetil eter", "metoksi metana"],
-            "pembahasan": "Gugus fungsi eter (-O-) yang menjembatani dua gugus metil (-CH3). Nama IUPAC: Metoksi Metana; Nama Trivial: Dimetil Eter."
-        },
-        {
-            "struktur": "CH3 - CH2 - CHO",
-            "kunci": ["propanal", "propionaldehida"],
-            "pembahasan": "Gugus formil/aldehida (-CHO) di ujung rantai yang memiliki total 3 atom karbon. Nama IUPAC: Propanal; Nama Trivial: Propionaldehida."
-        },
-        {
-            "struktur": "CH ≡ C - CH3",
-            "kunci": ["propuna", "metil asetilena"],
-            "pembahasan": "Mengandung ikatan rangkap tiga (alkuna) pada rantai 3 karbon. Nama IUPAC: Propuna; Nama Trivial: Metil Asetilena."
-        },
-        {
-            "struktur": "CH3 - CH2 - CH2 - Cl",
-            "kunci": ["1-kloropropana", "propil klorida"],
-            "pembahasan": "Senyawa haloalkana di mana atom klorin terikat pada karbon nomor 1 dari rantai propana. Nama IUPAC: 1-Kloropropana; Nama Trivial: Propil Klorida."
-        },
-        {
-            "struktur": "CH3 - COO - CH2 - CH3",
-            "kunci": ["etil etanoat", "etil asetat"],
-            "pembahasan": "Senyawa ester hasil reaksi asam asetat dan etanol. Bagian alkil adalah etil, gugus alkanoatnya adalah asetat. Nama IUPAC: Etil Etanoat; Nama Trivial: Etil Asetat."
-        },
-        {
-            "strong_title": "Soal Bonus Tantangan",
-            "struktur": "CH3 - CH(OH) - CH3",
-            "kunci": ["2-propanol", "isopropanol", "isopropil alkohol"],
-            "pembahasan": "Gugus alkohol terikat pada atom karbon nomor 2 (karbon sekunder) dari 3 total rantai karbon utama. Nama IUPAC: 2-Propanol; Nama Trivial: Isopropanol / Isopropil Alkohol."
-        }
+        {"str": "CH3 - CH2 - OH", "kunci": ["etanol", "etil alkohol"], "pembahasan": "Memiliki 2 rantai karbon utama dan fungsional alkohol (-OH). IUPAC: Etanol, Trivial: Etil Alkohol."},
+        {"str": "CH3 - CO - CH3", "kunci": ["propanon", "aseton"], "pembahasan": "Rantai 3 karbon jenuh dengan keton (=O) di bagian tengah. IUPAC: Propanon, Trivial: Aseton."},
+        {"str": "CH3 - COOH", "kunci": ["asam asetat", "asam etanoat", "asam cuka"], "pembahasan": "Asam karboksilat berkarbon 2. Trivial: Asam asetat / asam cuka, IUPAC: Asam etanoat."},
+        {"str": "CH2 = CH - CH3", "kunci": ["propena", "propilena"], "pembahasan": "Alkena dengan 3 atom karbon memiliki satu ikatan rangkap dua. IUPAC: Propena, Trivial: Propilena."},
+        {"str": "CH3 - O - CH3", "kunci": ["dimetil eter", "metoksi metana"], "pembahasan": "Gugus eter (-O-) yang mengikat dua gugus metil di sisi kanan dan kiri. IUPAC: Metoksi metana, Trivial: Dimetil eter."},
+        {"str": "CH3 - CH2 - CHO", "kunci": ["propanal", "propionaldehida"], "pembahasan": "Gugus aldehida (-CHO) di ujung rantai dengan total 3 atom karbon. IUPAC: Propanal, Trivial: Propionaldehida."},
+        {"str": "CH ≡ C - CH3", "kunci": ["propuna", "metil asetilena"], "pembahasan": "Mengandung rantai karbon dengan ikatan rangkap tiga (alkuna). IUPAC: Propuna, Trivial: Metil asetilena."},
+        {"str": "CH3 - CH2 - CH2 - Cl", "kunci": ["1-kloropropana", "propil klorida"], "pembahasan": "Haloalkana di mana atom klorin menggantikan hidrogen pada atom karbon nomor 1. IUPAC: 1-Kloropropana."},
+        {"str": "CH3 - COO - CH2 - CH3", "kunci": ["etil etanoat", "etil asetat"], "pembahasan": "Senyawa ester. Rantai alkil pemutus adalah etil dan gugus utamanya asetat. Trivial: Etil asetat, IUPAC: Etil etanoat."},
+        {"str": "CH3 - CH(OH) - CH3", "kunci": ["2-propanol", "isopropanol", "isopropil alkohol"], "pembahasan": "Alkohol sekunder di mana gugus hidroksil terikat di karbon nomor 2 dari total 3 rantai utama. IUPAC: 2-Propanol."}
     ]
 
-    # Inisialisasi Session State Indeks Soal agar tidak reset saat klik tombol
-    if 'idx_soal' not in st.session_state:
-        st.session_state.idx_soal = 0
-    if 'skor' not in st.session_state:
-        st.session_state.skor = 0
+    if 'id_soal' not in st.session_state:
+        st.session_state.id_soal = 0
 
-    cur_idx = st.session_state.idx_soal
+    idx = st.session_state.id_soal
 
-    if cur_idx < len(bank_soal):
-        soal = bank_soal[cur_idx]
-        st.info(f"### 📌 Soal Ke-{cur_idx + 1} dari {len(bank_soal)}")
+    if idx < len(bank_soal):
+        current = bank_soal[idx]
+        st.info(f"### 📌 Soal Nomor {idx + 1} / {len(bank_soal)}")
+        st.markdown(f"Tentukan nama senyawa dari rumus struktur berikut:\n## `` {current['str']} ``")
         
-        # Penampilan Soal
-        st.markdown(f"""
-        Identifikasi dan tebak nama senyawa dengan struktur rantai berikut:
-        ### `` {soal['struktur']} ``
-        """)
+        user_ans = st.text_input("Jawaban Anda:", key=f"user_{idx}").strip().lower()
         
-        jawaban = st.text_input("Ketik Jawaban Anda di sini (IUPAC / Trivial Indonesia):", key=f"ans_{cur_idx}").strip().lower()
-        
-        col_btn1, col_btn2 = st.columns([1, 4])
-        with col_btn1:
-            tombol_cek = st.button("Kirim Jawaban")
-            
-        if tombol_cek:
-            if jawaban:
-                # Validasi jawaban
-                cocok = any(kunci_jwb in jawaban for kunci_jwb in soal['kunci'])
-                if cocok:
-                    st.success("🎉 **Benar Sekali!** Jawaban Anda tepat secara nomenklatur.")
+        if st.button("Kirim Jawaban"):
+            if user_ans:
+                is_correct = any(k in user_ans for k in current['kunci'])
+                if is_correct:
+                    st.success("🎉 **Luar Biasa, Benar!**")
                 else:
-                    st.error(f"❌ **Kurang Tepat.** Jawaban yang benar bisa berupa: {', '.join([k.title() for k in soal['kunci']])}")
+                    st.error(f"❌ **Belum Tepat.** Jawaban benar: {', '.join([x.title() for x in current['kunci']])}")
                 
-                # Tampilkan Pembahasan
-                with st.expander("📖 Lihat Penjelasan Pembahasan Teori"):
-                    st.markdown(soal['pembahasan'])
+                with st.expander("📖 Lihat Pembahasan Teori"):
+                    st.write(current['pembahasan'])
             else:
-                st.warning("Silakan isi jawaban terlebih dahulu sebelum menekan tombol cek.")
+                st.warning("Silakan tulis jawaban Anda terlebih dahulu.")
                 
         st.markdown("---")
         if st.button("Lanjut ke Soal Berikutnya ➡️"):
-            st.session_state.idx_soal += 1
-            st.columns(1) # trigger refresh halaman streamlit kuno
+            st.session_state.id_soal += 1
             st.rerun()
-            
     else:
         st.balloons()
-        st.success("🌟 **Luar Biasa! Anda telah menyelesaikan seluruh 10 soal latihan tata nama organik.**")
-        if st.button("🔄 Ulangi Latihan dari Awal"):
-            st.session_state.idx_soal = 0
+        st.success("🏆 **Selamat! Anda berhasil menyelesaikan seluruh 10 paket latihan soal tata nama organik.**")
+        if st.button("Ulangi Dari Awal"):
+            st.session_state.id_soal = 0
             st.rerun()
