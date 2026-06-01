@@ -21,7 +21,7 @@ def translate_id_to_en(nama_senyawa):
         "etena": "ethene", "etilena": "ethene",
         "asetilena": "acetylene", "etuna": "acetylene",
         "bromana": "bromomethane", "bromometana": "bromomethane",
-        "butil asetat": "butyl acetate", "n-butanol": "1-butanol", "butanol": "1-butanol"
+        "butil asetat": "butyl acetate", "n-butanol": "1-butanol", "butanol": "1-butanol": 'heksana'
     }
     nama_clean = nama_senyawa.lower().strip()
     return kamus.get(nama_clean, nama_clean)
