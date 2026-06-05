@@ -1,5 +1,4 @@
 streamlit
+pubchempy
 stmol
 py3Dmol
-pubchempy
-rdkit
