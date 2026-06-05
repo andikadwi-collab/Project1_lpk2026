@@ -1,5 +1,4 @@
-streamlit
-rdkit-pypi
-py3Dmol
-pubchempy
-pandas
+streamlit>=1.28.0
+rdkit-pypi>=2023.3.3
+py3Dmol>=1.8.0
+pubchempy>=1.0.4
