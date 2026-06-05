@@ -1,4 +1,5 @@
 streamlit
 pubchempy
-stmol
 py3Dmol
+stmol
+deep-translator
