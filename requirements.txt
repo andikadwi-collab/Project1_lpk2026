@@ -1,5 +1,5 @@
 streamlit
-pubchempy
+rdkit-pypi
 py3Dmol
-stmol
-deep-translator
+pubchempy
+pandas
